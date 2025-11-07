@@ -9,11 +9,13 @@ local function minintro()
       [[    \_/\_/ |_|_| |_| |_|  ]],
       [[                          ]],
       [[   Neovim configuration   ]],
-      [[tailored by and for waldez]],
+      [[  tailored by&for waldez  ]],
+      [[                          ]],
+      [[   - No session found -   ]],
    }
 
-   local PLUGIN_NAME = "minintro"
-   local DEFAULT_COLOR = "#85aed4"
+   local PLUGIN_NAME = 'minintro'
+   local DEFAULT_COLOR = '#85aed4'
    local INTRO_LOGO_HEIGHT = #intro_logo
    local INTRO_LOGO_WIDTH = 26
 
@@ -22,11 +24,11 @@ local function minintro()
    local minintro_buff = -1
 
    local function unlock_buf(buf)
-      vim.api.nvim_set_option_value("modifiable", true, { buf = buf })
+      vim.api.nvim_set_option_value('modifiable', true, { buf = buf })
    end
 
    local function lock_buf(buf)
-      vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
+      vim.api.nvim_set_option_value('modifiable', false, { buf = buf })
    end
 
    local function draw_minintro(buf, logo_width, logo_height)
@@ -39,10 +41,10 @@ local function minintro()
       if (start_col < 0 or start_row < 0) then return end
 
       local top_space = {}
-      for _ = 1, start_row do table.insert(top_space, "") end
+      for _ = 1, start_row do table.insert(top_space, '') end
 
       local col_offset_spaces = {}
-      for _ = 1, start_col do table.insert(col_offset_spaces, " ") end
+      for _ = 1, start_col do table.insert(col_offset_spaces, ' ') end
       local col_offset = table.concat(col_offset_spaces, '')
 
       local adjusted_logo = {}
@@ -57,17 +59,17 @@ local function minintro()
 
       vim.api.nvim_buf_set_extmark(buf, highlight_ns_id, start_row, start_col, {
          end_row = start_row + INTRO_LOGO_HEIGHT,
-         hl_group = "Default"
+         hl_group = 'Default'
       })
    end
 
    local function create_and_set_minintro_buf(default_buff)
-      local intro_buff = vim.api.nvim_create_buf("nobuflisted", "unlisted")
+      local intro_buff = vim.api.nvim_create_buf('nobuflisted', 'unlisted')
       vim.api.nvim_buf_set_name(intro_buff, PLUGIN_NAME)
-      vim.api.nvim_set_option_value("bufhidden", "wipe", { buf = intro_buff })
-      vim.api.nvim_set_option_value("buftype", "nofile", { buf = intro_buff })
-      vim.api.nvim_set_option_value("filetype", "minintro", { buf = intro_buff })
-      vim.api.nvim_set_option_value("swapfile", false, { buf = intro_buff })
+      vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = intro_buff })
+      vim.api.nvim_set_option_value('buftype', 'nofile', { buf = intro_buff })
+      vim.api.nvim_set_option_value('filetype', 'minintro', { buf = intro_buff })
+      vim.api.nvim_set_option_value('swapfile', false, { buf = intro_buff })
 
       vim.api.nvim_set_current_buf(intro_buff)
       vim.api.nvim_buf_delete(default_buff, { force = true })
@@ -79,8 +81,8 @@ local function minintro()
       vim.opt_local.number = false         -- disable line numbers
       vim.opt_local.relativenumber = false -- disable relative line numbers
       vim.opt_local.list = false           -- disable displaying whitespace
-      vim.opt_local.fillchars = { eob = ' ' } -- do not display "~" on each new line
-      vim.opt_local.colorcolumn = "0"      -- disable colorcolumn
+      vim.opt_local.fillchars = { eob = ' ' } -- do not display '~' on each new line
+      vim.opt_local.colorcolumn = '0'      -- disable colorcolumn
    end
 
    local function redraw()
@@ -95,8 +97,8 @@ local function minintro()
 
       local default_buff = vim.api.nvim_get_current_buf()
       local default_buff_name = vim.api.nvim_buf_get_name(default_buff)
-      local default_buff_filetype = vim.api.nvim_get_option_value("filetype", { buf = default_buff })
-      if not is_dir and default_buff_name ~= "" and default_buff_filetype ~= PLUGIN_NAME then
+      local default_buff_filetype = vim.api.nvim_get_option_value('filetype', { buf = default_buff })
+      if not is_dir and default_buff_name ~= '' and default_buff_filetype ~= PLUGIN_NAME then
          return
       end
 
@@ -105,7 +107,7 @@ local function minintro()
 
       draw_minintro(minintro_buff, INTRO_LOGO_WIDTH, INTRO_LOGO_HEIGHT)
 
-      vim.api.nvim_create_autocmd({ "WinResized", "VimResized" }, {
+      vim.api.nvim_create_autocmd({ 'WinResized', 'VimResized' }, {
          group = autocmd_group,
          buffer = minintro_buff,
          callback = redraw
@@ -113,10 +115,10 @@ local function minintro()
    end
    local function setup(options)
       options = options or {}
-      vim.api.nvim_set_hl(highlight_ns_id, "Default", { fg = options.color or DEFAULT_COLOR })
+      vim.api.nvim_set_hl(highlight_ns_id, 'Default', { fg = options.color or DEFAULT_COLOR })
       vim.api.nvim_set_hl_ns(highlight_ns_id)
 
-      vim.api.nvim_create_autocmd("VimEnter", {
+      vim.api.nvim_create_autocmd('VimEnter', {
          group = autocmd_group,
          callback = display_minintro,
          once = true
@@ -124,6 +126,9 @@ local function minintro()
    end
 
    return {
+      buff = function() return minintro_buff; end,
+      unlock_buf = function () unlock_buf(minintro_buff); end,
+      lock_buf = function () lock_buf(minintro_buff); end,
       setup = setup
    }
 end
@@ -134,7 +139,8 @@ function M.setup(opts)
    -- TODO! make it, so it works same way that in vanilla nvim
    -- meaning: after you start typing, the splassh will go away!
    -- TODO: #2 make autocmds for sessions like in the stolen minintro!
-   minintro().setup()
+   M.intro = minintro()
+   M.intro.setup()
 
    -- Auto commands 
    vim.cmd([[
@@ -153,7 +159,7 @@ function M.save_session()
       -- Save the current sessionoptions value
       local current_sessionoptions = vim.o.sessionoptions
       -- Set sessionoptions to save buffers and tab pages
-      vim.o.sessionoptions = "buffers,tabpages"
+      vim.o.sessionoptions = 'buffers,tabpages'
       vim.cmd('mksession! ' .. session_file)
       -- Restore sessionoptions to its previous value
       vim.o.sessionoptions = current_sessionoptions
@@ -168,16 +174,19 @@ function M.load_session()
       -- Check if Neovim was started with file arguments
       if vim.fn.argc() == 0 and vim.fn.filereadable(session_file) == 1 then
 
-         -- Ask the user if they want to load the session
-         local answer = vim.fn.input("Session found. Do you want to load it? (Y/n): ")
-         if answer:lower() == 'y' then
-            -- Delay the sourcing of the session file by 100ms
-            vim.defer_fn(function()
-               vim.cmd('source ' .. session_file)
+         M.intro.unlock_buf()
+         -- local escaped = session_file:gsub('/', '\\/')
+         -- vim.cmd('%s/No session found/'..escaped..'/');
+         vim.cmd('%s/ - No session found - /Press enter to restore/');
+
+         vim.api.nvim_buf_set_keymap(M.intro.buff(),
+            'n', '<enter>', 'irrelevant',
+            { noremap = true, silent = true, callback = function ()
+               vim.cmd('source .vim/session.vim')
                -- Delete the session file after loading it
-               vim.cmd('silent! !rm ' .. session_file)
-            end, 100)
-         end
+               vim.cmd('silent! !rm .vim/session.vim')
+            end });
+         M.intro.lock_buf()
       end
    end
 end

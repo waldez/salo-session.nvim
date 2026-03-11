@@ -11,7 +11,7 @@ local function minintro()
       [[   Neovim configuration   ]],
       [[  tailored by&for waldez  ]],
       [[                          ]],
-      [[   - No session found -   ]],
+      [[   --==]}  fuck  {[==--   ]],
    }
 
    local PLUGIN_NAME = 'minintro'
@@ -174,17 +174,59 @@ function M.load_session()
       -- Check if Neovim was started with file arguments
       if vim.fn.argc() == 0 and vim.fn.filereadable(session_file) == 1 then
 
+         -- local opts = {
+         --    id = ns,
+         --    hl_mode = 'combine',
+         --    priority = 100,
+         --    -- virt_lines_leftcol = true,
+         --    virt_lines = virtualLines,
+         --    -- virt_text_win_col = start_col,
+         --    virt_text_win_col = 10,
+         --    -- virt_lines = {
+         --    --    { { '| Hello', 'DiagnosticInfo' } },
+         --    --    { { '| World', 'DiagnosticInfo' } },
+         --    -- },
+         -- }
+         --
+         local buf = M.intro.buff()
+         local window = vim.fn.bufwinid(buf)
+         local screen_width = vim.api.nvim_win_get_width(window)
+         local screen_height = vim.api.nvim_win_get_height(window) - vim.opt.cmdheight:get()
+
+         local start_col = math.floor((screen_width - #session_file) / 2)
+         local start_row = math.floor((screen_height / 2))
+         if (start_col < 0 or start_row < 0) then return end
+
+         local top_space = {}
+         for _ = 1, start_row do table.insert(top_space, '') end
+
+         local col_offset_spaces = {}
+         for _ = 1, start_col do table.insert(col_offset_spaces, ' ') end
+         local col_offset = table.concat(col_offset_spaces, '')
+
+         local virtualLines = {}
+         table.insert(virtualLines, { { col_offset .. 'Session found, press <Enter> to restore:', 'Title' } })
+         table.insert(virtualLines, { { col_offset .. session_file, 'Title' } })
+
+         local opts = {
+            id = vim.api.nvim_create_namespace('minintro'),
+            hl_mode = 'combine',
+            priority = 100,
+            virt_lines = virtualLines,
+         }
+
+         vim.api.nvim_buf_set_extmark(M.intro.buff(), opts.id, start_row + 5, 0, opts)
+
          M.intro.unlock_buf()
          -- local escaped = session_file:gsub('/', '\\/')
-         -- vim.cmd('%s/No session found/'..escaped..'/');
-         vim.cmd('%s/ - No session found - /Press enter to restore/');
+         -- vim.cmd('%s/ - No session found - /Press enter to restore/');
 
          vim.api.nvim_buf_set_keymap(M.intro.buff(),
             'n', '<enter>', 'irrelevant',
             { noremap = true, silent = true, callback = function ()
-               vim.cmd('source .vim/session.vim')
+               vim.cmd('source '..session_file..'')
                -- Delete the session file after loading it
-               vim.cmd('silent! !rm .vim/session.vim')
+               vim.cmd('silent! !rm '..session_file..'')
             end });
          M.intro.lock_buf()
       end

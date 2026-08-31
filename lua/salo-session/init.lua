@@ -171,23 +171,16 @@ function M.load_session()
    local dir = vim.fn.getcwd()
    if dir then
       local session_file = dir .. '/.vim/session.vim'
+
+      -- Plugin updates are independent of whether a session was found, and
+      -- must not be skipped by the early returns in the session block below.
+      if vim.fn.argc() == 0 then
+         M.auto_update()
+      end
+
       -- Check if Neovim was started with file arguments
       if vim.fn.argc() == 0 and vim.fn.filereadable(session_file) == 1 then
 
-         -- local opts = {
-         --    id = ns,
-         --    hl_mode = 'combine',
-         --    priority = 100,
-         --    -- virt_lines_leftcol = true,
-         --    virt_lines = virtualLines,
-         --    -- virt_text_win_col = start_col,
-         --    virt_text_win_col = 10,
-         --    -- virt_lines = {
-         --    --    { { '| Hello', 'DiagnosticInfo' } },
-         --    --    { { '| World', 'DiagnosticInfo' } },
-         --    -- },
-         -- }
-         --
          local buf = M.intro.buff()
          local window = vim.fn.bufwinid(buf)
          local screen_width = vim.api.nvim_win_get_width(window)
@@ -218,8 +211,6 @@ function M.load_session()
          vim.api.nvim_buf_set_extmark(M.intro.buff(), opts.id, start_row + 5, 0, opts)
 
          M.intro.unlock_buf()
-         -- local escaped = session_file:gsub('/', '\\/')
-         -- vim.cmd('%s/ - No session found - /Press enter to restore/');
 
          vim.api.nvim_buf_set_keymap(M.intro.buff(),
             'n', '<enter>', 'irrelevant',
@@ -231,6 +222,119 @@ function M.load_session()
          M.intro.lock_buf()
       end
    end
+end
+
+local Report = require('salo-session.lazy_report')
+
+local update_ns = vim.api.nvim_create_namespace('salo-session-lazy-update')
+local UPDATE_EXTMARK_ID = 1
+
+-- Draw the current update state on the splash, replacing whatever was there
+-- before. Safe to call once per phase; a no-op once the splash is gone.
+local function render(state)
+   local buf = M.intro.buff()
+   if not buf or buf < 0 or not vim.api.nvim_buf_is_valid(buf) then return end
+
+   local lines = Report.lines(state)
+   if #lines == 0 then
+      pcall(vim.api.nvim_buf_del_extmark, buf, update_ns, UPDATE_EXTMARK_ID)
+      return
+   end
+
+   local window = vim.fn.bufwinid(buf)
+   if window == -1 then return end
+   local screen_width = vim.api.nvim_win_get_width(window)
+
+   -- Centre the block as a whole on its widest line, so the relative
+   -- indentation of the summary and error lines is preserved.
+   local widest = 0
+   for _, line in ipairs(lines) do widest = math.max(widest, #line[1]) end
+   local start_col = math.max(0, math.floor((screen_width - widest) / 2))
+   local col_offset = string.rep(' ', start_col)
+
+   local virt_lines = { { { '' } } }
+   for _, line in ipairs(lines) do
+      table.insert(virt_lines, { { col_offset .. line[1], line[2] } })
+   end
+
+   -- Anchor below the session prompt; clamp so we never point past the buffer.
+   local anchor = math.min(math.floor(vim.api.nvim_win_get_height(window) / 2) + 7,
+      vim.api.nvim_buf_line_count(buf) - 1)
+   if anchor < 0 then return end
+
+   pcall(vim.api.nvim_buf_set_extmark, buf, update_ns, anchor, 0, {
+      id = UPDATE_EXTMARK_ID,
+      hl_mode = 'combine',
+      priority = 99,
+      virt_lines = virt_lines,
+   })
+end
+
+-- Report a failure both on the splash and through :messages, verbosely.
+local function report_crash(err)
+   local msg = tostring(err)
+   render({ phase = 'crashed', error = msg })
+   vim.notify('salo-session: plugin update failed\n' .. msg, vim.log.levels.ERROR)
+end
+
+-- Run the update itself, then summarise what moved and what broke.
+local function run_update(pending)
+   render({ phase = 'updating', pending = pending })
+
+   local ok, err = pcall(function()
+      require('lazy.manage').update({ plugins = pending, show = false }):wait(function()
+         local done_ok, done_err = pcall(function()
+            local plugins = require('lazy.core.config').plugins
+            local errors = Report.errors(plugins)
+            render({ phase = 'done', updated = Report.updated(plugins), errors = errors })
+            for _, e in ipairs(errors) do
+               vim.notify('salo-session: updating ' .. e.name .. ' failed\n' .. e.msg,
+                  vim.log.levels.ERROR)
+            end
+         end)
+         if not done_ok then report_crash(done_err) end
+      end)
+   end)
+   if not ok then report_crash(err) end
+end
+
+-- Automatically bring lazy.nvim plugins up to date, without ever opening the
+-- Lazy popup, and show the outcome on the welcome screen.
+function M.auto_update()
+   local ok, err = pcall(function()
+      local buf = M.intro.buff()
+      if buf and buf >= 0 and vim.api.nvim_buf_is_valid(buf) then
+         -- Manual re-run, useful when the automatic pass reported an error.
+         vim.api.nvim_buf_set_keymap(buf, 'n', 'u', '', {
+            noremap = true, silent = true, callback = function() M.auto_update() end,
+         })
+      end
+
+      local checker = require('lazy.manage.checker')
+      local config = require('lazy.core.config')
+
+      -- Cheap, offline pass over already-fetched refs. This is the same state
+      -- that produces lazy's "you have updates" message at startup.
+      checker.fast_check({ report = false })
+      local pending = Report.pending(config.plugins)
+      if #pending > 0 then
+         return run_update(pending)
+      end
+
+      -- Nothing known to be pending, so go ask the remotes.
+      render({ phase = 'checking' })
+      require('lazy.manage').check({ show = false }):wait(function()
+         local check_ok, check_err = pcall(function()
+            local found = Report.pending(config.plugins)
+            if #found == 0 then
+               return render({ phase = 'done', updated = {}, errors = {} })
+            end
+            run_update(found)
+         end)
+         if not check_ok then report_crash(check_err) end
+      end)
+   end)
+   if not ok then report_crash(err) end
 end
 
 return M

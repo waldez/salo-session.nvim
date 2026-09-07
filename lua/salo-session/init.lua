@@ -151,11 +151,31 @@ function M.setup(opts)
    ]])
 end
 
+local SessionState = require('salo-session.session_state')
+
+-- Everything mksession would care about, in the shape session_state expects.
+local function buffer_summary()
+   local buffers = {}
+   for _, b in ipairs(vim.api.nvim_list_bufs()) do
+      table.insert(buffers, {
+         name = vim.api.nvim_buf_get_name(b),
+         listed = vim.fn.buflisted(b) == 1,
+         buftype = vim.api.nvim_get_option_value('buftype', { buf = b }),
+      })
+   end
+   return buffers
+end
+
 -- Function to save the session
 function M.save_session()
    local dir = vim.fn.getcwd()
    if dir then
       local session_file = dir .. '/.vim/session.vim'
+
+      -- Writing a session with nothing in it is worse than writing none: the
+      -- next start offers to restore it and restoring it does nothing.
+      if not SessionState.worth_saving(buffer_summary()) then return end
+
       -- Save the current sessionoptions value
       local current_sessionoptions = vim.o.sessionoptions
       -- Set sessionoptions to save buffers and tab pages
@@ -201,23 +221,51 @@ function M.load_session()
          table.insert(virtualLines, { { col_offset .. 'Session found, press <Enter> to restore:', 'Title' } })
          table.insert(virtualLines, { { col_offset .. session_file, 'Title' } })
 
+         local prompt_ns = vim.api.nvim_create_namespace('minintro')
+         local PROMPT_EXTMARK_ID = prompt_ns
+
          local opts = {
-            id = vim.api.nvim_create_namespace('minintro'),
+            id = PROMPT_EXTMARK_ID,
             hl_mode = 'combine',
             priority = 100,
             virt_lines = virtualLines,
          }
 
-         vim.api.nvim_buf_set_extmark(M.intro.buff(), opts.id, start_row + 5, 0, opts)
+         vim.api.nvim_buf_set_extmark(M.intro.buff(), prompt_ns, start_row + 5, 0, opts)
 
          M.intro.unlock_buf()
+
+         -- Take the prompt down for good. A session that restores no windows
+         -- leaves us sitting on the splash with the prompt still up, and a
+         -- second <Enter> would then source a file the first one deleted.
+         local function retire_prompt()
+            local buf = M.intro.buff()
+            if not buf or buf < 0 or not vim.api.nvim_buf_is_valid(buf) then return end
+            pcall(vim.api.nvim_buf_del_keymap, buf, 'n', '<enter>')
+            pcall(vim.api.nvim_buf_del_extmark, buf, prompt_ns, PROMPT_EXTMARK_ID)
+         end
 
          vim.api.nvim_buf_set_keymap(M.intro.buff(),
             'n', '<enter>', 'irrelevant',
             { noremap = true, silent = true, callback = function ()
-               vim.cmd('source '..session_file..'')
-               -- Delete the session file after loading it
-               vim.cmd('silent! !rm '..session_file..'')
+               retire_prompt()
+
+               if vim.fn.filereadable(session_file) ~= 1 then
+                  vim.notify('salo-session: session file vanished before it could be restored\n'
+                     .. session_file, vim.log.levels.ERROR)
+                  return
+               end
+
+               local ok, err = pcall(vim.cmd, 'source ' .. vim.fn.fnameescape(session_file))
+               if not ok then
+                  vim.notify('salo-session: restoring the session failed\n' .. session_file
+                     .. '\n' .. tostring(err), vim.log.levels.ERROR)
+                  return
+               end
+
+               -- Delete the session file after loading it. vim.fn.delete keeps
+               -- this off the shell, which mangled paths containing spaces.
+               vim.fn.delete(session_file)
             end });
          M.intro.lock_buf()
       end

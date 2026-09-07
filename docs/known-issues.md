@@ -62,11 +62,27 @@ press succeeded.
 - **Swap-file collision (`E325`).** Plausible in general, but not what happened
   here: the error was `E484`, a missing file, not an ATTENTION prompt.
 
-## Still open
+## Restore prompt missing on narrow terminals
 
-- **`save_session` does not create `.vim/`.** If the directory does not already
-  exist, `mksession!` fails and no session is ever written for that project.
-- **The restore prompt silently disappears on narrow terminals.** `load_session`
-  bails out via `if (start_col < 0 or start_row < 0) then return end`, so when
-  the session path is wider than the window there is no prompt and no
-  explanation. Long project paths in an 80-column terminal hit this.
+**Status:** fixed 2026-09-07.
+
+`load_session` centred the prompt with
+`start_col = (screen_width - #session_file) / 2` and then bailed out entirely on
+`if (start_col < 0 or start_row < 0) then return end`. Whenever the session path
+was wider than the window there was no prompt, no message and no way to restore
+the session -- an 80-column terminal on a project path of 80+ characters was
+enough.
+
+`salo-session.layout.fit()` now shortens the path to the window instead,
+keeping the tail, since the project and file name are what identify it. The
+ellipsis is only used when it can sit on a `/`, where it reads as "the path
+continues to the left"; anywhere else it would just cost three columns of
+filename, so the bare tail is shown. Both prompt lines are centred as a block
+on whichever is wider, and the extmark row is clamped to the buffer.
+
+## By design, not a bug
+
+- **`save_session` never creates `.vim/`.** Creating that directory is the
+  signal that a directory is a project, and it is made deliberately, by hand.
+  Auto-creating it would scatter `.vim/` across every directory nvim is ever
+  opened in. Sessions are only written where `.vim/` already exists.

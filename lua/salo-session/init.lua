@@ -151,6 +151,7 @@ function M.setup(opts)
    ]])
 end
 
+local Layout = require('salo-session.layout')
 local SessionState = require('salo-session.session_state')
 
 -- Everything mksession would care about, in the shape session_state expects.
@@ -206,20 +207,22 @@ function M.load_session()
          local screen_width = vim.api.nvim_win_get_width(window)
          local screen_height = vim.api.nvim_win_get_height(window) - vim.opt.cmdheight:get()
 
-         local start_col = math.floor((screen_width - #session_file) / 2)
-         local start_row = math.floor((screen_height / 2))
-         if (start_col < 0 or start_row < 0) then return end
+         local label = 'Session found, press <Enter> to restore:'
 
-         local top_space = {}
-         for _ = 1, start_row do table.insert(top_space, '') end
+         -- Shorten rather than give up. Bailing out here used to leave a
+         -- restorable session with no prompt and no explanation whenever the
+         -- path was wider than the window.
+         local shown_path = Layout.fit(session_file, screen_width)
 
-         local col_offset_spaces = {}
-         for _ = 1, start_col do table.insert(col_offset_spaces, ' ') end
-         local col_offset = table.concat(col_offset_spaces, '')
+         -- Centre the two lines as a block, so they stay aligned with each
+         -- other even when one of them is what decides the width.
+         local start_col = Layout.center_col(screen_width, math.max(#label, #shown_path))
+         local start_row = math.max(0, math.floor(screen_height / 2))
+         local col_offset = string.rep(' ', start_col)
 
          local virtualLines = {}
-         table.insert(virtualLines, { { col_offset .. 'Session found, press <Enter> to restore:', 'Title' } })
-         table.insert(virtualLines, { { col_offset .. session_file, 'Title' } })
+         table.insert(virtualLines, { { col_offset .. label, 'Title' } })
+         table.insert(virtualLines, { { col_offset .. shown_path, 'Title' } })
 
          local prompt_ns = vim.api.nvim_create_namespace('minintro')
          local PROMPT_EXTMARK_ID = prompt_ns
@@ -231,7 +234,12 @@ function M.load_session()
             virt_lines = virtualLines,
          }
 
-         vim.api.nvim_buf_set_extmark(M.intro.buff(), prompt_ns, start_row + 5, 0, opts)
+         -- Clamp so a short splash buffer (narrow or shallow window) cannot
+         -- push the anchor past the last line.
+         local anchor = math.min(start_row + 5, vim.api.nvim_buf_line_count(buf) - 1)
+         if anchor < 0 then return end
+
+         vim.api.nvim_buf_set_extmark(buf, prompt_ns, anchor, 0, opts)
 
          M.intro.unlock_buf()
 

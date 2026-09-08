@@ -80,6 +80,59 @@ continues to the left"; anywhere else it would just cost three columns of
 filename, so the bare tail is shown. Both prompt lines are centred as a block
 on whichever is wider, and the extmark row is clamped to the buffer.
 
+## Splash crashes when lazy.nvim installs a plugin at startup
+
+**Status:** fixed 2026-09-08.
+
+Adding a new plugin spec and starting nvim produced two errors:
+
+```
+Error in VimEnter Autocommands for "*":
+Lua callback: .../salo-session/init.lua:75: Invalid buffer id: 2
+        [C]: in function 'nvim_buf_delete'
+Error in VimEnter Autocommands for "*":
+E5108: Lua: .../salo-session/init.lua:207: Invalid window id: -1
+        [C]: in function 'nvim_win_get_width'
+```
+
+`display_minintro` decided which buffer to replace by looking at the *current*
+buffer and checking only its name:
+
+```lua
+if not is_dir and default_buff_name ~= '' and default_buff_filetype ~= PLUGIN_NAME then return end
+```
+
+While a plugin installs, lazy.nvim's popup is focused at `VimEnter`, and that
+popup buffer is **unnamed**:
+
+```
+buf 1 name="" buftype=""       filetype=""         bufhidden=""
+buf 2 name="" buftype="nofile" filetype="lazy"     bufhidden="wipe"   <- picked
+```
+
+So the splash mistook the popup for the buffer nvim starts with, took over its
+window, and `nvim_set_current_buf` wiped the popup buffer (`bufhidden=wipe`)
+before the `nvim_buf_delete` that followed -- hence `Invalid buffer id: 2`. The
+real startup buffer was never cleaned up.
+
+The second error is a cascade: the throw left `minintro_buff` unassigned at its
+`-1` initial value, so `load_session` called `bufwinid(-1)` -> `-1` ->
+`nvim_win_get_width(-1)`.
+
+### The fix
+
+- `session_state.splash_target()` picks the window to take over from *all*
+  windows, not the focused one: an unnamed buffer only qualifies when its
+  `buftype` is also empty, which excludes every plugin scratch window. A named
+  buffer qualifies only when it is a directory (`nvim .`).
+- The splash is placed with `nvim_win_set_buf(win, ...)` rather than
+  `nvim_set_current_buf`, so a popup open at `VimEnter` keeps its window and
+  its focus.
+- The delete is guarded with `nvim_buf_is_valid`, since switching away can wipe
+  the outgoing buffer on its own.
+- `load_session` returns quietly when there is no splash buffer or it is not in
+  a window, instead of throwing.
+
 ## By design, not a bug
 
 - **`save_session` never creates `.vim/`.** Creating that directory is the

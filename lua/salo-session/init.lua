@@ -1,5 +1,9 @@
 local M = {}
 
+local Layout = require('salo-session.layout')
+local Report = require('salo-session.lazy_report')
+local SessionState = require('salo-session.session_state')
+
 local function minintro()
    local intro_logo = {
       [[            _             ]],
@@ -63,7 +67,7 @@ local function minintro()
       })
    end
 
-   local function create_and_set_minintro_buf(default_buff)
+   local function create_and_set_minintro_buf(win, default_buff)
       local intro_buff = vim.api.nvim_create_buf('nobuflisted', 'unlisted')
       vim.api.nvim_buf_set_name(intro_buff, PLUGIN_NAME)
       vim.api.nvim_set_option_value('bufhidden', 'wipe', { buf = intro_buff })
@@ -71,8 +75,15 @@ local function minintro()
       vim.api.nvim_set_option_value('filetype', 'minintro', { buf = intro_buff })
       vim.api.nvim_set_option_value('swapfile', false, { buf = intro_buff })
 
-      vim.api.nvim_set_current_buf(intro_buff)
-      vim.api.nvim_buf_delete(default_buff, { force = true })
+      -- Place the splash in its own window rather than whichever one happens to
+      -- be focused, so a plugin popup open at VimEnter keeps its window.
+      vim.api.nvim_win_set_buf(win, intro_buff)
+
+      -- Switching away can wipe the outgoing buffer by itself, so only delete
+      -- what is still there.
+      if default_buff ~= intro_buff and vim.api.nvim_buf_is_valid(default_buff) then
+         vim.api.nvim_buf_delete(default_buff, { force = true })
+      end
 
       return intro_buff
    end
@@ -92,18 +103,38 @@ local function minintro()
       draw_minintro(minintro_buff, INTRO_LOGO_WIDTH, INTRO_LOGO_HEIGHT)
    end
 
-   local function display_minintro(payload)
-      local is_dir = vim.fn.isdirectory(payload.file) == 1
+   -- Describe every window in the shape session_state.splash_target expects.
+   local function window_summary()
+      local windows = {}
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+         local buf = vim.api.nvim_win_get_buf(win)
+         local name = vim.api.nvim_buf_get_name(buf)
+         table.insert(windows, {
+            win = win,
+            buf = buf,
+            name = name,
+            buftype = vim.api.nvim_get_option_value('buftype', { buf = buf }),
+            isdir = name ~= '' and vim.fn.isdirectory(name) == 1,
+         })
+      end
+      return windows
+   end
 
-      local default_buff = vim.api.nvim_get_current_buf()
-      local default_buff_name = vim.api.nvim_buf_get_name(default_buff)
-      local default_buff_filetype = vim.api.nvim_get_option_value('filetype', { buf = default_buff })
-      if not is_dir and default_buff_name ~= '' and default_buff_filetype ~= PLUGIN_NAME then
-         return
+   local function display_minintro()
+      local windows = window_summary()
+      local win = SessionState.splash_target(windows)
+      if not win then return end
+
+      local default_buff
+      for _, w in ipairs(windows) do
+         if w.win == win then default_buff = w.buf end
       end
 
-      minintro_buff = create_and_set_minintro_buf(default_buff)
-      set_options()
+      minintro_buff = create_and_set_minintro_buf(win, default_buff)
+
+      -- set_options uses window-local options, so run it in the splash's own
+      -- window, which is not necessarily the focused one.
+      vim.api.nvim_win_call(win, set_options)
 
       draw_minintro(minintro_buff, INTRO_LOGO_WIDTH, INTRO_LOGO_HEIGHT)
 
@@ -151,8 +182,6 @@ function M.setup(opts)
    ]])
 end
 
-local Layout = require('salo-session.layout')
-local SessionState = require('salo-session.session_state')
 
 -- Everything mksession would care about, in the shape session_state expects.
 local function buffer_summary()
@@ -202,8 +231,15 @@ function M.load_session()
       -- Check if Neovim was started with file arguments
       if vim.fn.argc() == 0 and vim.fn.filereadable(session_file) == 1 then
 
+         -- There may be no splash to draw on: display_minintro bails out when
+         -- nvim started on a real file, or when nothing but plugin windows are
+         -- open. Nothing to prompt on, so say nothing.
          local buf = M.intro.buff()
+         if not buf or buf < 0 or not vim.api.nvim_buf_is_valid(buf) then return end
+
          local window = vim.fn.bufwinid(buf)
+         if window == -1 then return end
+
          local screen_width = vim.api.nvim_win_get_width(window)
          local screen_height = vim.api.nvim_win_get_height(window) - vim.opt.cmdheight:get()
 
@@ -280,7 +316,6 @@ function M.load_session()
    end
 end
 
-local Report = require('salo-session.lazy_report')
 
 local update_ns = vim.api.nvim_create_namespace('salo-session-lazy-update')
 local UPDATE_EXTMARK_ID = 1

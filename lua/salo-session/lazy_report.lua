@@ -1,4 +1,5 @@
--- Pure helpers that turn lazy.nvim plugin state into renderable report lines.
+-- Pure helpers over lazy.nvim state: what to update, how to fetch without
+-- racing lazy's own checker, and how to report the outcome as renderable lines.
 -- Kept free of nvim API calls so it can be tested headlessly.
 local M = {}
 
@@ -105,6 +106,34 @@ function M.lines(state)
    end
 
    return out
+end
+
+-- How to discover updates without racing lazy.nvim's own checker. Two git
+-- fetches in one repository race on the ref lock ("cannot lock ref ... is at X
+-- but expected Y"), so we must never fetch while the checker is fetching.
+--
+--   'claim'    the checker's fetch is due right now; do it ourselves and record
+--              it as the checker's, so the checker stands down instead of
+--              fetching alongside us
+--   'offline'  the checker fetched recently and will not fetch now; act on the
+--              refs it already fetched
+--   'own'      nothing else is fetching; go ask the remotes ourselves
+--
+-- Claiming beats waiting for the checker: its progress can stall behind its
+-- own "Plugin Updates" hit-enter prompt, and anything that stopped waiting
+-- before that prompt was dismissed would race it all over again.
+--
+-- Options: enabled, last_check, frequency, now, has_errors, force.
+function M.plan(o)
+   -- The checker skips its fetch entirely while any plugin has errors, so there
+   -- is nothing to claim.
+   if o.force or not o.enabled or o.has_errors then return 'own' end
+
+   -- Mirrors lazy's own scheduling: it defers the check by
+   -- last_check + frequency - now seconds, clamped to zero.
+   if (o.last_check or 0) + o.frequency - o.now <= 0 then return 'claim' end
+
+   return 'offline'
 end
 
 return M

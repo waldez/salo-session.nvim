@@ -133,6 +133,76 @@ The second error is a cascade: the throw left `minintro_buff` unassigned at its
 - `load_session` returns quietly when there is no splash buffer or it is not in
   a window, instead of throwing.
 
+## Auto-update fails with "cannot lock ref"
+
+**Status:** fixed 2026-09-15.
+
+Opening nvim in a fresh directory produced:
+
+```
+salo-session: updating gitsigns.nvim failed
+error: cannot lock ref 'refs/remotes/origin/diffwk': is at 08bf78e... but expected d530c81...
+ ! d530c81...08bf78e diffwk     -> origin/diffwk  (unable to update local ref)
+```
+
+Git's compare-and-swap on the ref failed because **another `git fetch` in the
+same repository had already moved it** -- the ref was left at exactly the value
+our fetch was trying to write, and the repository was otherwise healthy. Only
+branches that moved upstream can collide, which is why it was intermittent and
+named one odd branch.
+
+The other fetch was lazy.nvim's own checker (`checker = { enabled = true }` in
+wim). On a start where its last check is older than `checker.frequency`:
+
+1. `VimEnter` -> `auto_update` -> `manage.update` / `manage.check` -> `git fetch`
+2. `VeryLazy` + 10ms -> `checker.start()` -> check due -> `Manage.check` -> a
+   second `git fetch` in every repository, concurrently
+
+### Why not simply wait for the checker
+
+The first attempt waited for `User LazyCheck` before fetching. It never fired in
+testing: `checker.start()` posts its multi-line "# Plugin Updates" notification
+*before* scheduling the check, and that notification raises a hit-enter prompt.
+Until it is dismissed the checker does not even schedule its fetch, and lazy's
+in-flight git callbacks do not complete. A wait with a timeout would then start
+fetching while the checker was still blocked, and dismissing the prompt later
+would recreate the race.
+
+### The fix
+
+`lazy_report.plan()` decides how to discover updates, mirroring lazy's own
+scheduling (`last_check + frequency - now`, clamped to zero):
+
+- **claim** -- the checker's fetch is due now. salo does the full network check
+  itself and first records it in lazy's `state.json`, exactly as the checker
+  records its own. The checker reads that file on `VeryLazy`, which is after
+  `VimEnter`, finds nothing due, and reschedules instead of fetching.
+- **offline** -- the checker fetched recently and will not fetch now. Update
+  whatever the already-fetched refs show as pending; no discovery fetch.
+- **own** -- checker disabled, blocked by plugin errors (it skips fetching
+  then), or the manual `u` re-run. Fetch as before.
+
+Verified in an isolated lazy setup with every `git fetch` start and exit logged
+per repository, and the checker's entry points traced. With a plugin one commit
+behind:
+
+- claim: salo's check fetches start at VimEnter; the checker reads the claimed
+  state, reschedules ~3600s out and never enters `check()`; once lazy's prompt
+  is dismissed salo's fetches complete, then the update fetch runs on its own
+  and the plugin lands on its target commit.
+- offline: the update fetch runs alone, the checker only runs `git log`, and
+  the plugin lands on its target commit.
+
+### Left as is
+
+- lazy's "# Plugin Updates" notification still appears at startup, and its
+  hit-enter prompt still has to be dismissed before in-flight updates finish.
+  It is lazy's own `checker.notify` (default `true`), and it predates this fix.
+  Setting `checker = { enabled = true, notify = false }` in wim would silence
+  it, at the cost of losing it on starts with file arguments, where salo does
+  not auto-update.
+- Two nvim instances starting at the same moment can still fetch concurrently.
+
 ## By design, not a bug
 
 - **`save_session` never creates `.vim/`.** Creating that directory is the

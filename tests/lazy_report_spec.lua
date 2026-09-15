@@ -156,4 +156,43 @@ H.test('lines() reports a crash in the update machinery itself', function()
    }, R.lines({ phase = 'crashed', error = 'attempt to index a nil value' }))
 end)
 
+-- plan(): whether to fetch ourselves, or leave the fetch to lazy's checker.
+-- Two git fetches in one repo race on the ref lock ("cannot lock ref ... is at
+-- X but expected Y"), so we must never fetch while the checker is fetching.
+-- When its fetch is due we do it ourselves and record it as the checker's.
+
+local HOUR = 3600
+local NOW = 1789463086
+
+H.test('plan() fetches itself when lazy\'s checker is disabled', function()
+   H.eq('own', R.plan({ enabled = false, last_check = 0, frequency = HOUR, now = NOW }))
+end)
+
+H.test('plan() claims the check when the checker has never checked', function()
+   H.eq('claim', R.plan({ enabled = true, last_check = 0, frequency = HOUR, now = NOW }))
+end)
+
+H.test('plan() claims the check when the checker\'s last check is stale', function()
+   H.eq('claim', R.plan({ enabled = true, last_check = NOW - HOUR - 1, frequency = HOUR, now = NOW }))
+end)
+
+H.test('plan() claims the check when it falls due exactly now', function()
+   -- lazy defers its check by last_check + frequency - now, clamped to 0.
+   H.eq('claim', R.plan({ enabled = true, last_check = NOW - HOUR, frequency = HOUR, now = NOW }))
+end)
+
+H.test('plan() stays offline when the checker fetched recently', function()
+   H.eq('offline', R.plan({ enabled = true, last_check = NOW - 153, frequency = HOUR, now = NOW }))
+end)
+
+H.test('plan() fetches itself when plugin errors stop the checker fetching', function()
+   -- The checker skips its fetch while any plugin has errors, so there is no
+   -- fetch of its own to claim.
+   H.eq('own', R.plan({ enabled = true, last_check = 0, frequency = HOUR, now = NOW, has_errors = true }))
+end)
+
+H.test('plan() fetches itself when forced, e.g. the manual re-run key', function()
+   H.eq('own', R.plan({ enabled = true, last_check = NOW - 153, frequency = HOUR, now = NOW, force = true }))
+end)
+
 H.done()

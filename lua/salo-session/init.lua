@@ -389,38 +389,80 @@ local function run_update(pending)
    if not ok then report_crash(err) end
 end
 
+local function report_nothing_pending()
+   render({ phase = 'done', updated = {}, errors = {} })
+end
+
+-- Act on refs that have already been fetched: update whatever they show as
+-- pending. Returns false when nothing was pending.
+local function update_fetched()
+   require('lazy.manage.checker').fast_check({ report = false })
+   local pending = Report.pending(require('lazy.core.config').plugins)
+   if #pending == 0 then return false end
+   run_update(pending)
+   return true
+end
+
+-- Record a check as done, exactly the way lazy's checker records its own. The
+-- checker reads this back when it starts on VeryLazy, finds nothing due, and
+-- reschedules instead of fetching alongside us -- two fetches in one repo race
+-- on the ref lock of any branch that moved upstream.
+local function claim_check()
+   local State = require('lazy.state')
+   State.checker.last_check = os.time()
+   State.write()
+end
+
 -- Automatically bring lazy.nvim plugins up to date, without ever opening the
 -- Lazy popup, and show the outcome on the welcome screen.
-function M.auto_update()
+--
+-- opts.force skips coordinating with lazy's checker and asks the remotes
+-- directly; the manual re-run key uses it.
+function M.auto_update(opts)
+   opts = opts or {}
    local ok, err = pcall(function()
       local buf = M.intro.buff()
       if buf and buf >= 0 and vim.api.nvim_buf_is_valid(buf) then
          -- Manual re-run, useful when the automatic pass reported an error.
          vim.api.nvim_buf_set_keymap(buf, 'n', 'u', '', {
-            noremap = true, silent = true, callback = function() M.auto_update() end,
+            noremap = true, silent = true,
+            callback = function() M.auto_update({ force = true }) end,
          })
       end
 
-      local checker = require('lazy.manage.checker')
       local config = require('lazy.core.config')
+      local checker_opts = config.options.checker or {}
+      local mode = Report.plan({
+         enabled = checker_opts.enabled,
+         last_check = require('lazy.state').checker.last_check,
+         frequency = checker_opts.frequency or 3600,
+         now = os.time(),
+         has_errors = require('lazy.manage.checker').has_errors(),
+         force = opts.force,
+      })
 
-      -- Cheap, offline pass over already-fetched refs. This is the same state
-      -- that produces lazy's "you have updates" message at startup.
-      checker.fast_check({ report = false })
-      local pending = Report.pending(config.plugins)
-      if #pending > 0 then
-         return run_update(pending)
+      if mode == 'claim' then
+         -- Has to happen here, at VimEnter, before the checker reads its state.
+         -- Having taken over its check, skip the offline shortcut: the checker
+         -- would have asked every remote, so we do too.
+         claim_check()
+      else
+         -- Cheap, offline pass over already-fetched refs. This is the same
+         -- state that produces lazy's "you have updates" message at startup.
+         if update_fetched() then return end
+
+         if mode == 'offline' then
+            -- The checker fetched recently and nothing is pending; asking the
+            -- remotes again would only repeat its work.
+            return report_nothing_pending()
+         end
       end
 
-      -- Nothing known to be pending, so go ask the remotes.
+      -- Nothing else is fetching, so go ask the remotes ourselves.
       render({ phase = 'checking' })
       require('lazy.manage').check({ show = false }):wait(function()
          local check_ok, check_err = pcall(function()
-            local found = Report.pending(config.plugins)
-            if #found == 0 then
-               return render({ phase = 'done', updated = {}, errors = {} })
-            end
-            run_update(found)
+            if not update_fetched() then report_nothing_pending() end
          end)
          if not check_ok then report_crash(check_err) end
       end)

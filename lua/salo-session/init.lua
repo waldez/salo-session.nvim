@@ -1,6 +1,7 @@
 local M = {}
 
 local Layout = require('salo-session.layout')
+local MasonReport = require('salo-session.mason_report')
 local Report = require('salo-session.lazy_report')
 local SessionState = require('salo-session.session_state')
 
@@ -226,6 +227,7 @@ function M.load_session()
       -- must not be skipped by the early returns in the session block below.
       if vim.fn.argc() == 0 then
          M.auto_update()
+         M.mason_check()
       end
 
       -- Check if Neovim was started with file arguments
@@ -320,13 +322,27 @@ end
 local update_ns = vim.api.nvim_create_namespace('salo-session-lazy-update')
 local UPDATE_EXTMARK_ID = 1
 
--- Draw the current update state on the splash, replacing whatever was there
--- before. Safe to call once per phase; a no-op once the splash is gone.
-local function render(state)
+-- What each section of the splash report last said. Both share one extmark, so
+-- redrawing one section must not wipe the other.
+local sections = { lazy = nil, mason = nil }
+
+-- Draw every section on the splash, replacing whatever was there before. Safe
+-- to call once per phase; a no-op once the splash is gone.
+local function draw()
    local buf = M.intro.buff()
    if not buf or buf < 0 or not vim.api.nvim_buf_is_valid(buf) then return end
 
-   local lines = Report.lines(state)
+   local lines = {}
+   for _, section in ipairs({
+      Report.lines(sections.lazy or {}),
+      MasonReport.lines(sections.mason or {}),
+   }) do
+      if #section > 0 then
+         if #lines > 0 then table.insert(lines, { '', 'Comment' }) end
+         vim.list_extend(lines, section)
+      end
+   end
+
    if #lines == 0 then
       pcall(vim.api.nvim_buf_del_extmark, buf, update_ns, UPDATE_EXTMARK_ID)
       return
@@ -359,6 +375,18 @@ local function render(state)
       priority = 99,
       virt_lines = virt_lines,
    })
+end
+
+-- Show the current lazy.nvim update state.
+local function render(state)
+   sections.lazy = state
+   draw()
+end
+
+-- Show the current Mason state.
+local function render_mason(state)
+   sections.mason = state
+   draw()
 end
 
 -- Report a failure both on the splash and through :messages, verbosely.
@@ -468,6 +496,137 @@ function M.auto_update(opts)
       end)
    end)
    if not ok then report_crash(err) end
+end
+
+
+-- Longest tail of installer output kept per failed Mason package: enough for an
+-- npm or build failure in full, without flooding the splash.
+local MASON_OUTPUT_LINES = 40
+
+local mason_updating = false
+
+-- Every installed Mason package with its installed and latest version.
+local function mason_versions()
+   local pkgs = {}
+   for _, pkg in ipairs(require('mason-registry').get_installed_packages()) do
+      -- get_latest_version throws on a malformed registry entry; such a package
+      -- simply cannot be compared.
+      local ok, latest = pcall(pkg.get_latest_version, pkg)
+      table.insert(pkgs, {
+         name = pkg.name,
+         installed = pkg:get_installed_version(),
+         latest = ok and latest or nil,
+      })
+   end
+   return pkgs
+end
+
+-- Report a Mason failure both on the splash and through :messages, verbosely.
+local function report_mason_crash(err)
+   local msg = tostring(err)
+   render_mason({ phase = 'crashed', error = msg })
+   vim.notify('salo-session: Mason failed\n' .. msg, vim.log.levels.ERROR)
+end
+
+local function by_name(a, b) return a.name < b.name end
+
+-- Install the latest version of every outdated Mason package, then summarise
+-- what moved, what was skipped and what broke. Bound to M on the splash.
+function M.mason_update()
+   if mason_updating then return end
+   local ok, err = pcall(function()
+      local registry = require('mason-registry')
+      local queue, skipped, names = {}, {}, {}
+
+      for _, o in ipairs(MasonReport.outdated(mason_versions())) do
+         local pkg = registry.get_package(o.name)
+         -- install() asserts on these. Something else -- mason-lspconfig's
+         -- ensure_installed, or the :Mason UI -- is already on the package.
+         if pkg:is_installing() or pkg:is_uninstalling() then
+            table.insert(skipped, o.name)
+         else
+            table.insert(queue, { pkg = pkg, info = o })
+            table.insert(names, o.name)
+         end
+      end
+
+      local updated, errors = {}, {}
+      local remaining = #queue
+
+      local function finish()
+         mason_updating = false
+         table.sort(updated, by_name)
+         table.sort(errors, by_name)
+         render_mason({ phase = 'done', updated = updated, errors = errors, skipped = skipped })
+         for _, e in ipairs(errors) do
+            vim.notify('salo-session: updating Mason package ' .. e.name .. ' failed\n' .. e.msg,
+               vim.log.levels.ERROR)
+         end
+      end
+
+      if remaining == 0 then return finish() end
+
+      mason_updating = true
+      render_mason({ phase = 'updating', pending = names })
+
+      for _, q in ipairs(queue) do
+         local output = {}
+         local function capture(chunk) table.insert(output, chunk) end
+
+         -- Mason calls back from its own async context; nvim API calls need the
+         -- main loop.
+         local handle = q.pkg:install({}, vim.schedule_wrap(function(success, result)
+            local done_ok, done_err = pcall(function()
+               if success then
+                  table.insert(updated, q.info)
+               else
+                  table.insert(errors, {
+                     name = q.info.name,
+                     msg = MasonReport.failure_message(result, table.concat(output), MASON_OUTPUT_LINES),
+                  })
+               end
+               remaining = remaining - 1
+               if remaining == 0 then finish() end
+            end)
+            if not done_ok then
+               mason_updating = false
+               report_mason_crash(done_err)
+            end
+         end))
+         handle:on('stdout', capture)
+         handle:on('stderr', capture)
+      end
+   end)
+   if not ok then
+      mason_updating = false
+      report_mason_crash(err)
+   end
+end
+
+-- List outdated Mason packages on the splash. The registry is only fetched when
+-- Mason's own cache is stale (registry_cache.duration, 24h by default), so this
+-- is cheap to run on every start.
+function M.mason_check()
+   local ok, err = pcall(function()
+      local buf = M.intro.buff()
+      if buf and buf >= 0 and vim.api.nvim_buf_is_valid(buf) then
+         vim.api.nvim_buf_set_keymap(buf, 'n', 'M', '', {
+            noremap = true, silent = true, callback = function() M.mason_update() end,
+         })
+      end
+
+      render_mason({ phase = 'checking' })
+      require('mason-registry').refresh(vim.schedule_wrap(function(success, result)
+         local check_ok, check_err = pcall(function()
+            if not success then
+               error('refreshing the Mason registry failed: ' .. vim.inspect(result))
+            end
+            render_mason({ phase = 'outdated', outdated = MasonReport.outdated(mason_versions()) })
+         end)
+         if not check_ok then report_mason_crash(check_err) end
+      end))
+   end)
+   if not ok then report_mason_crash(err) end
 end
 
 return M

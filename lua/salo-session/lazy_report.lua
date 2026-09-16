@@ -59,8 +59,21 @@ local function plural(n, word)
    return n .. ' ' .. word .. (n == 1 and '' or 's')
 end
 
+-- One notification for every failure of a run, or nil when nothing failed. A
+-- notification per failure is a hit-enter prompt per failure, and a start
+-- without network fails for every plugin at once. Shared with the Mason report.
+function M.error_summary(what, noun, errors)
+   if #errors == 0 then return nil end
+   local parts = { ('salo-session: %s failed for %s'):format(what, plural(#errors, noun)) }
+   for _, e in ipairs(errors) do
+      table.insert(parts, '\n' .. e.name .. ':\n' .. e.msg)
+   end
+   return table.concat(parts, '\n')
+end
+
 -- Turns an update state into { text, highlight } pairs ready for virt_lines.
--- Phases: 'checking', 'updating', 'done', 'crashed'.
+-- Phases: 'checking', 'updating', 'done', 'crashed'. A 'done' state with
+-- stage = 'check' reports errors from the network check rather than an update.
 function M.lines(state)
    local out = {}
 
@@ -96,7 +109,9 @@ function M.lines(state)
 
    local errors = state.errors or {}
    if #errors > 0 then
-      table.insert(out, { 'Plugin update FAILED for ' .. plural(#errors, 'plugin') .. ':', 'ErrorMsg' })
+      -- The same task errors come from either stage; say which one failed.
+      local what = state.stage == 'check' and 'Checking for plugin updates' or 'Plugin update'
+      table.insert(out, { what .. ' FAILED for ' .. plural(#errors, 'plugin') .. ':', 'ErrorMsg' })
       for _, e in ipairs(errors) do
          table.insert(out, { '  ' .. e.name .. ':', 'ErrorMsg' })
          for _, line in ipairs(vim.split(e.msg, '\n', { plain = true })) do

@@ -156,6 +156,47 @@ H.test('lines() reports a crash in the update machinery itself', function()
    }, R.lines({ phase = 'crashed', error = 'attempt to index a nil value' }))
 end)
 
+H.test('lines() reports a failed check as a check, verbosely', function()
+   H.eq({
+      { 'Checking for plugin updates FAILED for 1 plugin:', 'ErrorMsg' },
+      { '  gitsigns.nvim:', 'ErrorMsg' },
+      { "    fatal: unable to access 'https://github.com/lewis6991/gitsigns.nvim.git/'", 'ErrorMsg' },
+      { '    Could not connect to server', 'ErrorMsg' },
+   }, R.lines({ phase = 'done', stage = 'check', updated = {}, errors = {
+      { name = 'gitsigns.nvim',
+        msg = "fatal: unable to access 'https://github.com/lewis6991/gitsigns.nvim.git/'\nCould not connect to server" },
+   } }))
+end)
+
+H.test('lines() says nothing after a clean check with nothing pending', function()
+   H.eq({}, R.lines({ phase = 'done', stage = 'check', updated = {}, errors = {} }))
+end)
+
+-- error_summary(): one notification per run, however many failed.
+
+H.test('error_summary() is nil when nothing failed', function()
+   H.eq(nil, R.error_summary('checking for plugin updates', 'plugin', {}))
+end)
+
+H.test('error_summary() names what failed, with the full error', function()
+   H.eq('salo-session: updating plugins failed for 1 plugin\n\ngitsigns.nvim:\nerror: cannot lock ref',
+      R.error_summary('updating plugins', 'plugin', {
+         { name = 'gitsigns.nvim', msg = 'error: cannot lock ref' },
+      }))
+end)
+
+H.test('error_summary() folds every failure into one message', function()
+   -- A message per failure is a hit-enter prompt per failure, and an offline
+   -- start fails for every plugin at once.
+   H.eq('salo-session: checking for plugin updates failed for 2 plugins\n\n'
+      .. 'lazy.nvim:\nfatal: unable to access\nCould not connect\n\n'
+      .. 'mason.nvim:\nfatal: unable to access',
+      R.error_summary('checking for plugin updates', 'plugin', {
+         { name = 'lazy.nvim', msg = 'fatal: unable to access\nCould not connect' },
+         { name = 'mason.nvim', msg = 'fatal: unable to access' },
+      }))
+end)
+
 -- plan(): whether to fetch ourselves, or leave the fetch to lazy's checker.
 -- Two git fetches in one repo race on the ref lock ("cannot lock ref ... is at
 -- X but expected Y"), so we must never fetch while the checker is fetching.

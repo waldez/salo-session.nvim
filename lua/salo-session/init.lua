@@ -406,10 +406,8 @@ local function run_update(pending)
             local plugins = require('lazy.core.config').plugins
             local errors = Report.errors(plugins)
             render({ phase = 'done', updated = Report.updated(plugins), errors = errors })
-            for _, e in ipairs(errors) do
-               vim.notify('salo-session: updating ' .. e.name .. ' failed\n' .. e.msg,
-                  vim.log.levels.ERROR)
-            end
+            local summary = Report.error_summary('updating plugins', 'plugin', errors)
+            if summary then vim.notify(summary, vim.log.levels.ERROR) end
          end)
          if not done_ok then report_crash(done_err) end
       end)
@@ -429,6 +427,16 @@ local function update_fetched()
    if #pending == 0 then return false end
    run_update(pending)
    return true
+end
+
+-- Nothing is pending after a network check. That is only good news if the
+-- check itself worked: a fetch that could not reach its remote finds nothing
+-- pending too. Report every failed check task, verbosely.
+local function report_check_outcome()
+   local errors = Report.errors(require('lazy.core.config').plugins)
+   render({ phase = 'done', stage = 'check', updated = {}, errors = errors })
+   local summary = Report.error_summary('checking for plugin updates', 'plugin', errors)
+   if summary then vim.notify(summary, vim.log.levels.ERROR) end
 end
 
 -- Record a check as done, exactly the way lazy's checker records its own. The
@@ -490,7 +498,9 @@ function M.auto_update(opts)
       render({ phase = 'checking' })
       require('lazy.manage').check({ show = false }):wait(function()
          local check_ok, check_err = pcall(function()
-            if not update_fetched() then report_nothing_pending() end
+            -- When something is pending, run_update's summary already lists
+            -- every plugin's failed tasks, check failures included.
+            if not update_fetched() then report_check_outcome() end
          end)
          if not check_ok then report_crash(check_err) end
       end)
@@ -558,10 +568,8 @@ function M.mason_update()
          table.sort(updated, by_name)
          table.sort(errors, by_name)
          render_mason({ phase = 'done', updated = updated, errors = errors, skipped = skipped })
-         for _, e in ipairs(errors) do
-            vim.notify('salo-session: updating Mason package ' .. e.name .. ' failed\n' .. e.msg,
-               vim.log.levels.ERROR)
-         end
+         local summary = Report.error_summary('updating Mason packages', 'package', errors)
+         if summary then vim.notify(summary, vim.log.levels.ERROR) end
       end
 
       if remaining == 0 then return finish() end
